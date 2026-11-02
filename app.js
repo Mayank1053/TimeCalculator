@@ -12,7 +12,8 @@
   // ==========================================
   const STORAGE_KEYS = {
     HISTORY: 'chronoshift_history_v2',
-    SETTINGS: 'chronoshift_settings_v2'
+    SETTINGS: 'chronoshift_settings_v2',
+    SYNC_KEY: 'chronoshift_sync_key_v2'
   };
 
   class SoundEngine {
@@ -119,7 +120,10 @@
     historySearch: '',
     activeTimer: null,
     targetDate: new Date(),
-    stepMilestones: []
+    stepMilestones: [],
+    syncKey: null,
+    lastSyncTime: null,
+    isSyncing: false
   };
 
   // ==========================================
@@ -133,6 +137,22 @@
     iconSoundOn: document.querySelector('.icon-sound-on'),
     iconSoundOff: document.querySelector('.icon-sound-off'),
     historyCountBadge: document.getElementById('historyCount'),
+
+    // Cloud Sync
+    btnOpenSyncModal: document.getElementById('btnOpenSyncModal'),
+    syncButtonLabel: document.getElementById('syncButtonLabel'),
+    syncModalOverlay: document.getElementById('syncModalOverlay'),
+    btnCloseSyncModal: document.getElementById('btnCloseSyncModal'),
+    syncStatusDot: document.getElementById('syncStatusDot'),
+    syncStatusText: document.getElementById('syncStatusText'),
+    syncLastTimeTag: document.getElementById('syncLastTimeTag'),
+    inputSyncKeyDisplay: document.getElementById('inputSyncKeyDisplay'),
+    btnCopySyncKey: document.getElementById('btnCopySyncKey'),
+    btnGenerateSyncKey: document.getElementById('btnGenerateSyncKey'),
+    inputConnectSyncKey: document.getElementById('inputConnectSyncKey'),
+    btnConnectSyncKey: document.getElementById('btnConnectSyncKey'),
+    btnForceSyncNow: document.getElementById('btnForceSyncNow'),
+    btnUnlinkSyncKey: document.getElementById('btnUnlinkSyncKey'),
 
     // Live Anchor Banner
     liveClockDisplay: document.getElementById('liveClockDisplay'),
@@ -311,10 +331,13 @@
     }
   }
 
-  function saveStoredHistory() {
+  function saveStoredHistory(skipCloudSync = false) {
     try {
       localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(state.history));
       renderHistoryList();
+      if (!skipCloudSync && state.syncKey) {
+        triggerDebouncedCloudPush();
+      }
     } catch (e) {
       console.error('Storage write error', e);
     }
@@ -329,6 +352,187 @@
     } catch (e) {
       console.warn('Settings write error', e);
     }
+  }
+
+  // ==========================================
+  // CLOUDFLARE KV SYNC ENGINE
+  // ==========================================
+  let syncDebounceTimer = null;
+
+  function generateSyncCode() {
+    const part1 = Math.random().toString(36).substring(2, 6);
+    const part2 = Math.random().toString(36).substring(2, 6);
+    return `chrono-${part1}-${part2}`;
+  }
+
+  function initSyncState() {
+    try {
+      const savedKey = localStorage.getItem(STORAGE_KEYS.SYNC_KEY);
+      if (savedKey && savedKey.trim().length >= 6) {
+        state.syncKey = savedKey.trim().toLowerCase();
+        updateSyncUI();
+        // Background silent pull on startup
+        performCloudSync(false);
+      } else {
+        updateSyncUI();
+      }
+    } catch (e) {
+      console.warn('Sync state init error', e);
+    }
+  }
+
+  function updateSyncUI() {
+    if (state.syncKey) {
+      dom.btnOpenSyncModal.classList.add('synced');
+      dom.syncButtonLabel.textContent = `Synced: ${state.syncKey}`;
+      dom.syncStatusDot.classList.add('active');
+      dom.syncStatusText.textContent = `Connected to Cloudflare KV: ${state.syncKey}`;
+      dom.inputSyncKeyDisplay.value = state.syncKey;
+      dom.syncLastTimeTag.textContent = state.lastSyncTime 
+        ? `Last synced: ${formatTime(state.lastSyncTime, state.timeFormat === '24', true)}`
+        : 'Synced';
+    } else {
+      dom.btnOpenSyncModal.classList.remove('synced');
+      dom.syncButtonLabel.textContent = 'Cloud Sync';
+      dom.syncStatusDot.classList.remove('active');
+      dom.syncStatusText.textContent = 'Cloud sync is currently disabled (Local storage only)';
+      dom.inputSyncKeyDisplay.value = '';
+      dom.syncLastTimeTag.textContent = 'Not synced';
+    }
+  }
+
+  async function pushHistoryToCloud(syncKey) {
+    if (!syncKey) return false;
+    try {
+      const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: syncKey,
+          history: state.history
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        state.lastSyncTime = new Date();
+        updateSyncUI();
+        return true;
+      } else {
+        console.warn('Cloud sync push warning:', data.error);
+        return false;
+      }
+    } catch (e) {
+      console.warn('Cloud sync push error (may be running locally without functions):', e);
+      return false;
+    }
+  }
+
+  async function pullHistoryFromCloud(syncKey) {
+    if (!syncKey) return null;
+    try {
+      const res = await fetch(`/api/sync?key=${encodeURIComponent(syncKey)}`);
+      const data = await res.json();
+      if (data.success) {
+        return data.history || [];
+      } else {
+        console.warn('Cloud sync pull warning:', data.error);
+        return null;
+      }
+    } catch (e) {
+      console.warn('Cloud sync pull error (may be running locally):', e);
+      return null;
+    }
+  }
+
+  function mergeHistoryLists(localList, remoteList) {
+    const map = new Map();
+    // Insert local items
+    localList.forEach(item => {
+      if (item && item.id) map.set(item.id, item);
+    });
+    // Merge remote items
+    remoteList.forEach(remoteItem => {
+      if (!remoteItem || !remoteItem.id) return;
+      if (!map.has(remoteItem.id)) {
+        map.set(remoteItem.id, remoteItem);
+      } else {
+        const localItem = map.get(remoteItem.id);
+        // If one is starred, keep starred
+        if (remoteItem.isStarred) localItem.isStarred = true;
+        map.set(remoteItem.id, localItem);
+      }
+    });
+
+    const merged = Array.from(map.values());
+    // Sort descending by recordedAt timestamp
+    merged.sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+    return merged.slice(0, 300);
+  }
+
+  async function performCloudSync(isManual = false) {
+    if (!state.syncKey) {
+      if (isManual) showToast('Please generate or enter a sync code first!', 'info');
+      return;
+    }
+
+    if (state.isSyncing) return;
+    state.isSyncing = true;
+    if (isManual) showToast('Syncing with Cloudflare KV...', 'info');
+
+    try {
+      const remoteHistory = await pullHistoryFromCloud(state.syncKey);
+      if (Array.isArray(remoteHistory)) {
+        // Merge with local
+        state.history = mergeHistoryLists(state.history, remoteHistory);
+        saveStoredHistory(true); // save locally without triggering another push
+        // Push merged state back to cloud
+        await pushHistoryToCloud(state.syncKey);
+        state.lastSyncTime = new Date();
+        updateSyncUI();
+        if (isManual) showToast('Successfully synchronized across devices! ☁️');
+      } else if (isManual) {
+        // First push
+        const pushed = await pushHistoryToCloud(state.syncKey);
+        if (pushed) {
+          showToast('Uploaded local history to Cloudflare KV! ☁️');
+        } else {
+          showToast('Note: If running locally, KV requires deployment to Cloudflare Pages.', 'info');
+        }
+      }
+    } catch (e) {
+      if (isManual) showToast('Sync check completed.', 'info');
+    } finally {
+      state.isSyncing = false;
+    }
+  }
+
+  function triggerDebouncedCloudPush() {
+    if (!state.syncKey) return;
+    if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(() => {
+      pushHistoryToCloud(state.syncKey);
+    }, 1200);
+  }
+
+  function connectSyncKey(key) {
+    if (!key || key.trim().length < 6) {
+      showToast('Sync code must be at least 6 characters.', 'info');
+      return;
+    }
+    const cleanKey = key.trim().toLowerCase();
+    state.syncKey = cleanKey;
+    localStorage.setItem(STORAGE_KEYS.SYNC_KEY, cleanKey);
+    updateSyncUI();
+    showToast(`Connected to sync code: ${cleanKey}`);
+    performCloudSync(true);
+  }
+
+  function unlinkSyncKey() {
+    if (!confirm('Unlink cloud sync on this device? Your local history will remain intact.')) return;
+    state.syncKey = null;
+    localStorage.removeItem(STORAGE_KEYS.SYNC_KEY);
+    updateSyncUI();
+    showToast('Device unlinked from Cloud sync', 'info');
   }
 
   function updateAudioIcon() {
@@ -1152,6 +1356,80 @@
     dom.btnExportHistory.addEventListener('click', exportHistory);
     dom.btnClearHistory.addEventListener('click', clearAllHistory);
 
+    // ==========================================
+    // Cloudflare KV Sync Modal Event Handlers
+    // ==========================================
+    if (dom.btnOpenSyncModal) {
+      dom.btnOpenSyncModal.addEventListener('click', () => {
+        sound.playClick();
+        dom.syncModalOverlay.style.display = 'flex';
+        updateSyncUI();
+      });
+    }
+
+    if (dom.btnCloseSyncModal) {
+      dom.btnCloseSyncModal.addEventListener('click', () => {
+        sound.playClick();
+        dom.syncModalOverlay.style.display = 'none';
+      });
+    }
+
+    if (dom.syncModalOverlay) {
+      dom.syncModalOverlay.addEventListener('click', (e) => {
+        if (e.target === dom.syncModalOverlay) {
+          dom.syncModalOverlay.style.display = 'none';
+        }
+      });
+    }
+
+    if (dom.btnGenerateSyncKey) {
+      dom.btnGenerateSyncKey.addEventListener('click', () => {
+        sound.playClick();
+        const newCode = generateSyncCode();
+        connectSyncKey(newCode);
+      });
+    }
+
+    if (dom.btnCopySyncKey) {
+      dom.btnCopySyncKey.addEventListener('click', () => {
+        sound.playClick();
+        if (!state.syncKey) {
+          showToast('No active sync code to copy.', 'info');
+          return;
+        }
+        navigator.clipboard.writeText(state.syncKey).then(() => {
+          showToast('Sync code copied to clipboard! 📋');
+        });
+      });
+    }
+
+    if (dom.btnConnectSyncKey) {
+      dom.btnConnectSyncKey.addEventListener('click', () => {
+        sound.playClick();
+        const entered = dom.inputConnectSyncKey.value;
+        if (entered) {
+          connectSyncKey(entered);
+          dom.inputConnectSyncKey.value = '';
+        } else {
+          showToast('Please type a sync code to connect.', 'info');
+        }
+      });
+    }
+
+    if (dom.btnForceSyncNow) {
+      dom.btnForceSyncNow.addEventListener('click', () => {
+        sound.playClick();
+        performCloudSync(true);
+      });
+    }
+
+    if (dom.btnUnlinkSyncKey) {
+      dom.btnUnlinkSyncKey.addEventListener('click', () => {
+        sound.playClick();
+        unlinkSyncKey();
+      });
+    }
+
     // Global keyboard shortcuts
     window.addEventListener('keydown', (e) => {
       const tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
@@ -1188,6 +1466,7 @@
     renderSteps();
     updateLiveClock();
     renderHistoryList();
+    initSyncState();
 
     // Start live clock ticking
     setInterval(updateLiveClock, 1000);

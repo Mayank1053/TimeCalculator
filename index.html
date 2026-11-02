@@ -54,6 +54,13 @@
           </svg>
         </button>
 
+        <button type="button" class="sync-pill-btn" id="btnOpenSyncModal" title="Sync history across devices">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+          </svg>
+          <span id="syncButtonLabel">Cloud Sync</span>
+        </button>
+
         <a href="#history-section" class="history-pill-btn" id="historyCounterBadge">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
@@ -330,6 +337,73 @@
         <span id="storageUsageIndicator">Local storage active</span>
       </div>
     </footer>
+  </div>
+
+  <!-- Cloudflare KV Sync Modal Dialog -->
+  <div class="modal-overlay" id="syncModalOverlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="syncModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <div class="modal-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+            </svg>
+          </div>
+          <div>
+            <h3 id="syncModalTitle">Cloudflare KV Sync</h3>
+            <p class="subtitle">Sync your calculation history securely across your phone, tablet, and PC.</p>
+          </div>
+        </div>
+        <button type="button" class="btn-close-modal" id="btnCloseSyncModal" aria-label="Close modal">×</button>
+      </div>
+
+      <div class="modal-body">
+        
+        <!-- Status Banner -->
+        <div class="sync-status-banner" id="syncStatusBanner">
+          <div class="sync-status-indicator">
+            <span class="sync-status-dot" id="syncStatusDot"></span>
+            <span id="syncStatusText">Cloud sync is currently disabled (Local storage only)</span>
+          </div>
+          <span class="sync-time-tag" id="syncLastTimeTag">--</span>
+        </div>
+
+        <!-- Section 1: Your Sync Code -->
+        <div class="modal-section-box">
+          <label class="modal-section-label">YOUR PRIVATE SYNC CODE</label>
+          <div class="sync-code-row">
+            <input type="text" id="inputSyncKeyDisplay" readonly class="sync-code-input" placeholder="No sync code active" />
+            <button type="button" class="btn-primary btn-sm" id="btnCopySyncKey" title="Copy code to clipboard">Copy</button>
+            <button type="button" class="btn-accent btn-sm" id="btnGenerateSyncKey">New Code</button>
+          </div>
+          <p class="modal-hint">Share this code with your other devices to sync the exact same history.</p>
+        </div>
+
+        <!-- Section 2: Connect another device -->
+        <div class="modal-section-box">
+          <label class="modal-section-label">CONNECT WITH EXISTING SYNC CODE</label>
+          <div class="sync-code-row">
+            <input type="text" id="inputConnectSyncKey" class="sync-code-input" placeholder="e.g. chrono-8f4b-21a9" />
+            <button type="button" class="btn-primary btn-sm" id="btnConnectSyncKey">Connect & Sync</button>
+          </div>
+          <p class="modal-hint">Enter the sync code displayed on your PC or other device to link them.</p>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="modal-actions-row">
+          <button type="button" class="btn-accent" id="btnForceSyncNow">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Sync Now (Push & Pull)</span>
+          </button>
+          <button type="button" class="btn-danger-subtle" id="btnUnlinkSyncKey">
+            Unlink / Disconnect
+          </button>
+        </div>
+
+      </div>
+    </div>
   </div>
 
   <!-- Toast Notification element -->
